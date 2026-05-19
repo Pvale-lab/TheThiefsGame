@@ -7,7 +7,7 @@ import { FACTIONS, DECK_CONFIG, GAME_RULES } from '../constants/GameConfig';
 export const createDeck = () => {
   let deck = [];
   
-  // Itera sobre as chaves das facções (HUMANS, ELVES, etc.)
+  // Itera sobre as chaves das facções 
   Object.keys(FACTIONS).forEach(factionKey => {
     for (let value = DECK_CONFIG.MIN_VALUE; value <= DECK_CONFIG.MAX_VALUE; value++) {
       deck.push({
