@@ -1,14 +1,18 @@
 import React, { useState } from 'react';
-import { View, Text, Button, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, Button, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
 import { createDeck, shuffleDeck, dealInitialCards } from '../logic/DeckManager';
-import { evaluateHand } from '../logic/HandEvaluator'; // Importamos o Avaliador!
-import { ROUND_PHASES } from '../constants/GameConfig';
+import { evaluateHand, compareHands } from '../logic/HandEvaluator';
+import { ROUND_PHASES, GAME_RULES } from '../constants/GameConfig';
 
 export default function GameScreen({ navigation }) {
   const [hands, setHands] = useState([]);
   const [currentDeck, setCurrentDeck] = useState([]);
   const [communityCards, setCommunityCards] = useState([]);
   const [gamePhase, setGamePhase] = useState(null);
+  
+  const [playerTokens, setPlayerTokens] = useState({}); 
+  const [gameStats, setGameStats] = useState({ successes: 0, traps: 0 });
+  const [roundResult, setRoundResult] = useState(null); 
 
   const handleDealCards = () => {
     const newDeck = createDeck();
@@ -18,10 +22,40 @@ export default function GameScreen({ navigation }) {
     setHands(playersHands);
     setCurrentDeck(remainingDeck);
     setCommunityCards([]); 
+    setPlayerTokens({});
+    setRoundResult(null);
     setGamePhase(ROUND_PHASES.PRE_FLOP);
   };
 
+  const handleTokenSelect = (playerIndex, tokenValue) => {
+    const newTokens = { ...playerTokens };
+
+    // MECÂNICA DE ROUBO: Se outro jogador já tem essa ficha, tira dele.
+    const currentOwner = Object.keys(newTokens).find(key => newTokens[key] === tokenValue);
+    if (currentOwner !== undefined) {
+      delete newTokens[currentOwner];
+    }
+
+    // Se o jogador clicar na própria ficha, ele a devolve pra mesa (desmarca)
+    if (playerTokens[playerIndex] === tokenValue) {
+      delete newTokens[playerIndex];
+    } else {
+      // Atribui a ficha ao novo dono
+      newTokens[playerIndex] = tokenValue;
+    }
+
+    setPlayerTokens(newTokens);
+  };
+
+  // Verifica se o grupo chegou ao consenso (as 4 fichas estão com os 4 jogadores)
+  const isConsensusReached = Object.keys(playerTokens).length === 4;
+
   const advancePhase = () => {
+    if (!isConsensusReached) {
+      Alert.alert("Consenso Necessário", "Todos os jogadores precisam estar com uma ficha antes de avançar!");
+      return;
+    }
+
     let deckCopy = [...currentDeck];
     let newCommunityCards = [...communityCards];
 
@@ -39,51 +73,87 @@ export default function GameScreen({ navigation }) {
         setGamePhase(ROUND_PHASES.RIVER);
         break;
       case ROUND_PHASES.RIVER:
-        setGamePhase(ROUND_PHASES.REVELATION);
+        resolveRound(); 
         break;
       default:
         break;
     }
-
     setCommunityCards(newCommunityCards);
     setCurrentDeck(deckCopy);
   };
 
+  const resolveRound = () => {
+    if (!isConsensusReached) return;
+
+    setGamePhase(ROUND_PHASES.REVELATION);
+
+    const playersData = hands.map((hand, index) => ({
+      index,
+      power: evaluateHand([...hand, ...communityCards]),
+      token: playerTokens[index]
+    }));
+
+    playersData.sort((a, b) => a.token - b.token);
+
+    let isSuccess = true;
+    for (let i = 0; i < playersData.length - 1; i++) {
+      const result = compareHands(playersData[i].power, playersData[i+1].power);
+      if (result > 0) { 
+        isSuccess = false;
+        break;
+      }
+    }
+
+    if (isSuccess) {
+      setRoundResult('SUCCESS');
+      setGameStats(prev => ({ ...prev, successes: prev.successes + 1 }));
+    } else {
+      setRoundResult('TRAP');
+      setGameStats(prev => ({ ...prev, traps: prev.traps + 1 }));
+    }
+  };
+
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.title}>Mesa de Jogo - The Thiefs</Text>
+      <View style={styles.headerScore}>
+        <Text style={styles.scoreText}>Explorações: <Text style={{color:'#10b981'}}>{gameStats.successes}/{GAME_RULES.SUCCESSES_TO_WIN}</Text></Text>
+        <Text style={styles.scoreText}>Armadilhas: <Text style={{color:'#ef4444'}}>{gameStats.traps}/{GAME_RULES.TRAPS_TO_LOSE}</Text></Text>
+      </View>
       
-      {gamePhase && (
-        <Text style={styles.phaseText}>Fase Atual: {gamePhase}</Text>
+      {roundResult && (
+        <View style={[styles.resultBanner, { backgroundColor: roundResult === 'SUCCESS' ? '#065f46' : '#7f1d1d' }]}>
+          <Text style={styles.resultText}>
+            {roundResult === 'SUCCESS' ? 'SUCESSO! O grupo ordenou corretamente.' : 'ARMADILHA! Alguém avaliou mal a mão.'}
+          </Text>
+        </View>
       )}
 
       <View style={styles.buttonContainer}>
         {gamePhase === null || gamePhase === ROUND_PHASES.REVELATION ? (
           <Button title="Nova Rodada" onPress={handleDealCards} />
         ) : (
-          <Button title="Avançar Fase (Revelar Cartas)" onPress={advancePhase} color="#f59e0b" />
+          <Button 
+            title={gamePhase === ROUND_PHASES.RIVER ? "Confirmar e Revelar!" : "Confirmar e Avançar Fase"} 
+            onPress={gamePhase === ROUND_PHASES.RIVER ? resolveRound : advancePhase} 
+            color={isConsensusReached ? (gamePhase === ROUND_PHASES.RIVER ? "#8b5cf6" : "#f59e0b") : "#52525b"} 
+          />
         )}
       </View>
 
       {/* Cartas Comunitárias */}
       <View style={styles.tableContainer}>
-        <Text style={styles.tableTitle}>Mesa (Cartas Comunitárias)</Text>
+        <Text style={styles.tableTitle}>Mesa (Fase: {gamePhase || 'Aguardando'})</Text>
         <View style={styles.cardsRow}>
-          {communityCards.length === 0 && <Text style={styles.info}>Nenhuma carta na mesa ainda.</Text>}
           {communityCards.map((card) => (
             <View key={card.id} style={[styles.card, { borderColor: card.color }]}>
               <Text style={[styles.cardValue, { color: card.color }]}>{card.value}</Text>
-              <Text style={{ color: card.color, fontSize: 10, fontWeight: 'bold' }}>
-                {card.faction.toUpperCase()}
-              </Text>
             </View>
           ))}
         </View>
       </View>
 
-      {/* Mãos dos Jogadores e Avaliação */}
+      {/* Mãos e Fichas dos Jogadores */}
       {hands.map((hand, index) => {
-        // A mágica acontece aqui: Juntamos a mão com a mesa para avaliar
         const combinedCards = [...hand, ...communityCards];
         const currentPower = evaluateHand(combinedCards);
 
@@ -91,52 +161,75 @@ export default function GameScreen({ navigation }) {
           <View key={index} style={styles.playerContainer}>
             <View style={styles.playerHeader}>
               <Text style={styles.playerTitle}>Jogador {index + 1}</Text>
-              {/* Exibe a força da mão atual */}
-              <Text style={styles.handPowerText}>Força: {currentPower.name}</Text>
+              <Text style={styles.handPowerText}>{currentPower.name}</Text>
             </View>
             
             <View style={styles.cardsRow}>
               {hand.map((card) => (
-                <View key={card.id} style={[styles.card, { borderColor: card.color }]}>
-                  <Text style={[styles.cardValue, { color: card.color }]}>{card.value}</Text>
-                  <Text style={{ color: card.color, fontSize: 10, fontWeight: 'bold' }}>
-                    {card.faction.toUpperCase()}
-                  </Text>
+                <View key={card.id} style={[styles.card, { borderColor: card.color, width: 50, height: 75 }]}>
+                  <Text style={[styles.cardValue, { color: card.color, fontSize: 18 }]}>{card.value}</Text>
                 </View>
               ))}
             </View>
+
+            {/* SELETOR DE FICHAS COM ROUBO PERMITIDO */}
+            {gamePhase && gamePhase !== ROUND_PHASES.REVELATION && (
+              <View style={styles.tokensRow}>
+                <Text style={{color: '#fff', marginRight: 10}}>Ficha:</Text>
+                {[1, 2, 3, 4].map(token => {
+                  const isSelectedByMe = playerTokens[index] === token;
+                  const isSelectedByOther = Object.values(playerTokens).includes(token) && !isSelectedByMe;
+                  
+                  return (
+                    <TouchableOpacity 
+                      key={token} 
+                      style={[
+                        styles.tokenButton, 
+                        isSelectedByMe ? styles.tokenSelected : {},
+                        // Se estiver com outro, deixa com uma cor sutil para indicar que pode ser roubada
+                        isSelectedByOther ? { borderColor: '#52525b', backgroundColor: '#27272a' } : {}
+                      ]}
+                      onPress={() => handleTokenSelect(index, token)}
+                    >
+                      <Text style={[
+                        styles.tokenText, 
+                        isSelectedByMe ? {color: '#000'} : {},
+                        isSelectedByOther ? {color: '#52525b'} : {}
+                      ]}>{token}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
           </View>
         );
       })}
-
-      <View style={styles.footer}>
-        <Button title="Sair do Jogo" onPress={() => navigation.goBack()} color="#ef4444" />
-      </View>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flexGrow: 1, alignItems: 'center', backgroundColor: '#1a1a1a', paddingVertical: 40, paddingHorizontal: 20 },
-  title: { fontSize: 24, color: '#fff', fontWeight: 'bold', marginBottom: 10 },
-  phaseText: { fontSize: 18, color: '#10b981', fontWeight: 'bold', marginBottom: 20 },
-  buttonContainer: { marginBottom: 15, flexDirection: 'row', gap: 10 },
-  info: { color: '#aaa', fontSize: 14 },
+  container: { flexGrow: 1, alignItems: 'center', backgroundColor: '#1a1a1a', paddingVertical: 40, paddingHorizontal: 15 },
+  headerScore: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', marginBottom: 20, backgroundColor: '#2a2a2a', padding: 10, borderRadius: 8 },
+  scoreText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  resultBanner: { width: '100%', padding: 15, borderRadius: 8, marginBottom: 15, alignItems: 'center' },
+  resultText: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' },
+  buttonContainer: { marginBottom: 15 },
   
-  tableContainer: {
-    width: '100%', backgroundColor: '#064e3b', padding: 15, borderRadius: 8, marginBottom: 25,
-    alignItems: 'center', borderWidth: 2, borderColor: '#047857'
-  },
-  tableTitle: { color: '#fff', fontSize: 18, marginBottom: 15, fontWeight: 'bold' },
+  tableContainer: { width: '100%', backgroundColor: '#064e3b', padding: 15, borderRadius: 8, marginBottom: 20, alignItems: 'center', borderWidth: 2, borderColor: '#047857' },
+  tableTitle: { color: '#fff', fontSize: 16, marginBottom: 10, fontWeight: 'bold' },
   
   playerContainer: { width: '100%', backgroundColor: '#2a2a2a', padding: 15, borderRadius: 8, marginBottom: 15 },
   playerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   playerTitle: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-  handPowerText: { color: '#fcd34d', fontSize: 14, fontWeight: 'bold', backgroundColor: '#451a03', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 },
+  handPowerText: { color: '#fcd34d', fontSize: 12, fontWeight: 'bold', backgroundColor: '#451a03', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
   
-  cardsRow: { flexDirection: 'row', justifyContent: 'center', gap: 10, flexWrap: 'wrap' },
-  card: { width: 60, height: 90, backgroundColor: '#fff', borderWidth: 3, borderRadius: 8, justifyContent: 'center', alignItems: 'center', marginHorizontal: 5 },
+  cardsRow: { flexDirection: 'row', justifyContent: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 },
+  card: { width: 60, height: 90, backgroundColor: '#fff', borderWidth: 3, borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
   cardValue: { fontSize: 24, fontWeight: 'bold' },
-  
-  footer: { marginTop: 30, width: '100%' }
+
+  tokensRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 5, backgroundColor: '#3f3f46', padding: 8, borderRadius: 8 },
+  tokenButton: { width: 35, height: 35, borderRadius: 20, borderWidth: 1, borderColor: '#fff', justifyContent: 'center', alignItems: 'center', marginHorizontal: 5 },
+  tokenSelected: { backgroundColor: '#fcd34d', borderColor: '#fcd34d' },
+  tokenText: { color: '#fff', fontWeight: 'bold', fontSize: 16 }
 });
