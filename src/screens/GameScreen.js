@@ -4,13 +4,31 @@ import { createDeck, shuffleDeck, dealInitialCards } from '../logic/DeckManager'
 import { evaluateHand, compareHands } from '../logic/HandEvaluator';
 import { ROUND_PHASES, GAME_RULES } from '../constants/GameConfig';
 
+// Mapeamento de cores das fichas por fase
+const TOKEN_COLORS = {
+  [ROUND_PHASES.PRE_FLOP]: '#ffffff', // Branca
+  [ROUND_PHASES.FLOP]: '#facc15',     // Amarela
+  [ROUND_PHASES.TURN]: '#f97316',     // Laranja
+  [ROUND_PHASES.RIVER]: '#ef4444',    // Vermelha
+};
+
+// Ordem das fases para exibir o histórico
+const PHASES_ORDER = [ROUND_PHASES.PRE_FLOP, ROUND_PHASES.FLOP, ROUND_PHASES.TURN, ROUND_PHASES.RIVER];
+
 export default function GameScreen({ navigation }) {
   const [hands, setHands] = useState([]);
   const [currentDeck, setCurrentDeck] = useState([]);
   const [communityCards, setCommunityCards] = useState([]);
   const [gamePhase, setGamePhase] = useState(null);
   
-  const [playerTokens, setPlayerTokens] = useState({}); 
+  // Agora guardamos um objeto para cada fase
+  const [tokensHistory, setTokensHistory] = useState({
+    [ROUND_PHASES.PRE_FLOP]: {},
+    [ROUND_PHASES.FLOP]: {},
+    [ROUND_PHASES.TURN]: {},
+    [ROUND_PHASES.RIVER]: {}
+  });
+
   const [gameStats, setGameStats] = useState({ successes: 0, traps: 0 });
   const [roundResult, setRoundResult] = useState(null); 
 
@@ -22,33 +40,43 @@ export default function GameScreen({ navigation }) {
     setHands(playersHands);
     setCurrentDeck(remainingDeck);
     setCommunityCards([]); 
-    setPlayerTokens({});
+    
+    // Zera o histórico
+    setTokensHistory({
+      [ROUND_PHASES.PRE_FLOP]: {},
+      [ROUND_PHASES.FLOP]: {},
+      [ROUND_PHASES.TURN]: {},
+      [ROUND_PHASES.RIVER]: {}
+    });
     setRoundResult(null);
     setGamePhase(ROUND_PHASES.PRE_FLOP);
   };
 
   const handleTokenSelect = (playerIndex, tokenValue) => {
-    const newTokens = { ...playerTokens };
+    setTokensHistory(prevHistory => {
+      // Trabalhamos apenas com as fichas da fase atual
+      const currentPhaseTokens = { ...prevHistory[gamePhase] };
 
-    // MECÂNICA DE ROUBO: Se outro jogador já tem essa ficha, tira dele.
-    const currentOwner = Object.keys(newTokens).find(key => newTokens[key] === tokenValue);
-    if (currentOwner !== undefined) {
-      delete newTokens[currentOwner];
-    }
+      // Sistema de roubo da fase atual
+      const currentOwner = Object.keys(currentPhaseTokens).find(key => currentPhaseTokens[key] === tokenValue);
+      if (currentOwner !== undefined) {
+        delete currentPhaseTokens[currentOwner];
+      }
 
-    // Se o jogador clicar na própria ficha, ele a devolve pra mesa (desmarca)
-    if (playerTokens[playerIndex] === tokenValue) {
-      delete newTokens[playerIndex];
-    } else {
-      // Atribui a ficha ao novo dono
-      newTokens[playerIndex] = tokenValue;
-    }
+      if (currentPhaseTokens[playerIndex] === tokenValue) {
+        delete currentPhaseTokens[playerIndex];
+      } else {
+        currentPhaseTokens[playerIndex] = tokenValue;
+      }
 
-    setPlayerTokens(newTokens);
+      return { ...prevHistory, [gamePhase]: currentPhaseTokens };
+    });
   };
 
-  // Verifica se o grupo chegou ao consenso (as 4 fichas estão com os 4 jogadores)
-  const isConsensusReached = Object.keys(playerTokens).length === 4;
+  // O consenso agora checa apenas a fase ATUAL
+  const isConsensusReached = gamePhase && tokensHistory[gamePhase] 
+    ? Object.keys(tokensHistory[gamePhase]).length === 4 
+    : false;
 
   const advancePhase = () => {
     if (!isConsensusReached) {
@@ -87,10 +115,13 @@ export default function GameScreen({ navigation }) {
 
     setGamePhase(ROUND_PHASES.REVELATION);
 
+    // A avaliação final DEVE usar as fichas da última fase (River)
+    const finalTokens = tokensHistory[ROUND_PHASES.RIVER];
+
     const playersData = hands.map((hand, index) => ({
       index,
       power: evaluateHand([...hand, ...communityCards]),
-      token: playerTokens[index]
+      token: finalTokens[index]
     }));
 
     playersData.sort((a, b) => a.token - b.token);
@@ -133,14 +164,13 @@ export default function GameScreen({ navigation }) {
           <Button title="Nova Rodada" onPress={handleDealCards} />
         ) : (
           <Button 
-            title={gamePhase === ROUND_PHASES.RIVER ? "Confirmar e Revelar!" : "Confirmar e Avançar Fase"} 
+            title={gamePhase === ROUND_PHASES.RIVER ? "Confirmar e Revelar!" : "Confirmar Fichas e Avançar"} 
             onPress={gamePhase === ROUND_PHASES.RIVER ? resolveRound : advancePhase} 
             color={isConsensusReached ? (gamePhase === ROUND_PHASES.RIVER ? "#8b5cf6" : "#f59e0b") : "#52525b"} 
           />
         )}
       </View>
 
-      {/* Cartas Comunitárias */}
       <View style={styles.tableContainer}>
         <Text style={styles.tableTitle}>Mesa (Fase: {gamePhase || 'Aguardando'})</Text>
         <View style={styles.cardsRow}>
@@ -152,10 +182,10 @@ export default function GameScreen({ navigation }) {
         </View>
       </View>
 
-      {/* Mãos e Fichas dos Jogadores */}
       {hands.map((hand, index) => {
         const combinedCards = [...hand, ...communityCards];
         const currentPower = evaluateHand(combinedCards);
+        const currentPhaseColor = TOKEN_COLORS[gamePhase] || '#fff';
 
         return (
           <View key={index} style={styles.playerContainer}>
@@ -172,21 +202,34 @@ export default function GameScreen({ navigation }) {
               ))}
             </View>
 
-            {/* SELETOR DE FICHAS COM ROUBO PERMITIDO */}
+            {/* HISTÓRICO DE FICHAS */}
+            <View style={styles.historyRow}>
+              {PHASES_ORDER.map(phase => {
+                const hasTokenInPhase = tokensHistory[phase] && tokensHistory[phase][index];
+                if (!hasTokenInPhase) return null;
+                
+                return (
+                  <View key={phase} style={[styles.historyToken, { backgroundColor: TOKEN_COLORS[phase] }]}>
+                    <Text style={styles.historyTokenText}>{tokensHistory[phase][index]}</Text>
+                  </View>
+                );
+              })}
+            </View>
+
+            {/* SELETOR DE FICHAS DA FASE ATUAL */}
             {gamePhase && gamePhase !== ROUND_PHASES.REVELATION && (
               <View style={styles.tokensRow}>
-                <Text style={{color: '#fff', marginRight: 10}}>Ficha:</Text>
+                <Text style={{color: '#fff', marginRight: 10}}>Escolha:</Text>
                 {[1, 2, 3, 4].map(token => {
-                  const isSelectedByMe = playerTokens[index] === token;
-                  const isSelectedByOther = Object.values(playerTokens).includes(token) && !isSelectedByMe;
+                  const isSelectedByMe = tokensHistory[gamePhase][index] === token;
+                  const isSelectedByOther = Object.values(tokensHistory[gamePhase]).includes(token) && !isSelectedByMe;
                   
                   return (
                     <TouchableOpacity 
                       key={token} 
                       style={[
                         styles.tokenButton, 
-                        isSelectedByMe ? styles.tokenSelected : {},
-                        // Se estiver com outro, deixa com uma cor sutil para indicar que pode ser roubada
+                        isSelectedByMe ? { backgroundColor: currentPhaseColor, borderColor: currentPhaseColor } : {},
                         isSelectedByOther ? { borderColor: '#52525b', backgroundColor: '#27272a' } : {}
                       ]}
                       onPress={() => handleTokenSelect(index, token)}
@@ -228,8 +271,11 @@ const styles = StyleSheet.create({
   card: { width: 60, height: 90, backgroundColor: '#fff', borderWidth: 3, borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
   cardValue: { fontSize: 24, fontWeight: 'bold' },
 
+  historyRow: { flexDirection: 'row', justifyContent: 'center', gap: 5, marginBottom: 10, minHeight: 20 },
+  historyToken: { width: 20, height: 20, borderRadius: 10, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#000' },
+  historyTokenText: { fontSize: 12, fontWeight: 'bold', color: '#000' },
+
   tokensRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 5, backgroundColor: '#3f3f46', padding: 8, borderRadius: 8 },
   tokenButton: { width: 35, height: 35, borderRadius: 20, borderWidth: 1, borderColor: '#fff', justifyContent: 'center', alignItems: 'center', marginHorizontal: 5 },
-  tokenSelected: { backgroundColor: '#fcd34d', borderColor: '#fcd34d' },
   tokenText: { color: '#fff', fontWeight: 'bold', fontSize: 16 }
 });
